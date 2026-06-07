@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import '../services/public_exam_service.dart';
+import '../core/api_client.dart';
 
 class ExamRunnerScreen extends StatefulWidget {
   final String examId;
@@ -21,7 +22,7 @@ class _ExamRunnerScreenState extends State<ExamRunnerScreen>
     with WidgetsBindingObserver {
   final PublicExamService _examService = PublicExamService();
 
-  final String baseUrl = "https://cbt.sdntomang03.sch.id";
+  final String baseUrl = ApiClient.baseUrl.replaceAll('/api', '');
 
   bool _isLoading = true;
   bool _isSubmitting = false;

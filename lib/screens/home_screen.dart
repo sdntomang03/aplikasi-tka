@@ -667,16 +667,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 color: const Color(0xFF3B82F6),
                 title: 'Materi\nMTK',
                 isPremium: _isUserPremium,
-                onTap: () =>
-                    _showDummyMessage('Materi Matematika belum tersedia'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      // Parameter diisi sesuai nama mapel & kelas di database Laravel Anda
+                      builder: (_) => const AllModulesScreen(
+                        subjectFilter: 'Matematika',
+                        levelFilter:
+                            'Kelas 6', // Anda bisa menghapus baris levelFilter jika ingin melihat MTK semua kelas
+                      ),
+                    ),
+                  );
+                },
               ),
               _MenuCard(
                 icon: Icons.menu_book_rounded,
                 color: const Color(0xFF10B981),
                 title: 'Materi\nB. Indo',
                 isPremium: _isUserPremium,
-                onTap: () =>
-                    _showDummyMessage('Materi B. Indonesia belum tersedia'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const AllModulesScreen(
+                        subjectFilter: 'Bahasa Indonesia',
+                        levelFilter: 'Kelas 6',
+                      ),
+                    ),
+                  );
+                },
               ),
               _MenuCard(
                 icon: Icons.quiz_rounded,
@@ -709,19 +729,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   );
                 },
               ),
-              _MenuCard(
-                icon: Icons.menu_book_rounded,
-                color: const Color(0xFF10B981),
-                title: 'Katalog\nModul',
-                isPremium: _isUserPremium,
-                onTap: () {
-                  // Arahkan ke Halaman Modul
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AllModulesScreen()),
-                  );
-                },
-              ),
+
               _MenuCard(
                 icon: Icons.emoji_events_rounded,
                 color: const Color(0xFFF43F5E),

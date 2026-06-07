@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../services/module_service.dart';
+import 'pdf_viewer_screen.dart';
+import '../core/api_client.dart';
 
 class ModuleDetailScreen extends StatefulWidget {
   final String slug;
@@ -16,8 +19,11 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
   Map<String, dynamic>? _module;
   bool _isLoading = true;
 
+  // [BARU] Controller untuk YouTube Player
+  YoutubePlayerController? _ytController;
+
   // Sesuaikan URL ini dengan backend CBT Laravel Anda
-  final String baseUrl = "https://cbt.sdntomang03.sch.id";
+  final String baseUrl = ApiClient.baseUrl.replaceAll('/api', '');
 
   String _processHtml(String rawHtml) {
     String processedHtml = rawHtml.replaceAll(
@@ -25,7 +31,6 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
       'src="$baseUrl/storage',
     );
 
-    // 1. Block LaTeX ($$ ... $$) -> Untuk pecahan/rumus baris baru (center)
     processedHtml = processedHtml.replaceAllMapped(
       RegExp(r'\$\$(.*?)\$\$', dotAll: true),
       (match) {
@@ -34,7 +39,6 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
       },
     );
 
-    // 2. Inline LaTeX ($ ... $) -> Untuk pecahan di dalam barisan teks
     processedHtml = processedHtml.replaceAllMapped(RegExp(r'\$(.*?)\$'), (
       match,
     ) {
@@ -42,7 +46,6 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
       return '<img src="https://latex.codecogs.com/png.latex?\\dpi{200}\\inline&space;$math" style="vertical-align: middle; height: 1.6em;" />';
     });
 
-    // 3. Rumus bawaan Quill Editor (<span class="ql-formula">)
     processedHtml = processedHtml.replaceAllMapped(
       RegExp(
         r'<span[^>]*class="ql-formula"[^>]*data-value="([^"]*)"[^>]*>.*?</span>',
@@ -66,8 +69,34 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
     _fetchDetail();
   }
 
+  @override
+  void dispose() {
+    // [BARU] Wajib mematikan controller saat keluar halaman agar tidak memory leak
+    _ytController?.dispose();
+    super.dispose();
+  }
+
   Future<void> _fetchDetail() async {
     final data = await _moduleService.getModuleDetail(widget.slug);
+
+    // [BARU] Inisialisasi YouTube Controller jika ada link video
+    if (data != null && data['video_url'] != null) {
+      final String videoUrl = data['video_url'];
+      // Ekstrak ID Video dari link (contoh: ?v=xxxx)
+      final String? videoId = YoutubePlayer.convertUrlToId(videoUrl);
+
+      if (videoId != null) {
+        _ytController = YoutubePlayerController(
+          initialVideoId: videoId,
+          flags: const YoutubePlayerFlags(
+            autoPlay: false, // Jangan auto-play agar hemat kuota siswa
+            mute: false,
+            enableCaption: true,
+          ),
+        );
+      }
+    }
+
     setState(() {
       _module = data;
       _isLoading = false;
@@ -88,14 +117,14 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC), // Slate 50 background
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0.5,
         title: Text(
           _module != null ? (_module!['title'] ?? 'Baca Modul') : 'Baca Modul',
           style: const TextStyle(
-            color: Color(0xFF1E293B), // Slate 800
+            color: Color(0xFF1E293B),
             fontWeight: FontWeight.w700,
             fontSize: 16,
           ),
@@ -121,11 +150,8 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
         _module!['content'] ?? '<p>Tidak ada konten.</p>';
     final String processedHtml = _processHtml(contentHtml);
 
-    // Mengekstrak nama subjek (mengakomodasi struktur nested di JSON)
     final String? subjectName =
         _module!['subject']?['name'] ?? _module!['subject_name'];
-
-    // Mengekstrak Video URL
     final String? videoUrl = _module!['video_url'];
 
     return SingleChildScrollView(
@@ -189,72 +215,94 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
           ),
           const SizedBox(height: 20),
 
-          // [BARU] Menampilkan Komponen Video Jika Tersedia dari JSON (Bukan dari dalam HTML content)
+          // [BARU] PEMUTAR VIDEO NATIVE
           if (videoUrl != null && videoUrl.isNotEmpty) ...[
-            Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E293B),
+            if (_ytController != null)
+              // Jika link valid YouTube, tampilkan video interaktif
+              ClipRRect(
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF334155)),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF0F172A).withOpacity(0.1),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
+                child: Container(
+                  decoration: BoxDecoration(
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
+                  child: YoutubePlayer(
+                    controller: _ytController!,
+                    showVideoProgressIndicator: true,
+                    progressIndicatorColor: const Color(
+                      0xFFF43F5E,
+                    ), // Merah YouTube
+                    progressColors: const ProgressBarColors(
+                      playedColor: Color(0xFFF43F5E),
+                      handleColor: Color(0xFFF43F5E),
+                    ),
+                  ),
+                ),
+              )
+            else
+              // Fallback (Cadangan) jika linknya bukan YouTube (misal Google Drive / MP4 rusak)
+              Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B),
                   borderRadius: BorderRadius.circular(16),
-                  onTap: () => _launchURL(videoUrl),
-                  child: Padding(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF43F5E).withOpacity(0.15),
-                            shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF334155)),
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => _launchURL(videoUrl),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20.0),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF43F5E).withOpacity(0.15),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.play_arrow_rounded,
+                              color: Color(0xFFF43F5E),
+                              size: 32,
+                            ),
                           ),
-                          child: const Icon(
-                            Icons.play_arrow_rounded,
-                            color: Color(0xFFF43F5E), // Rose 500
-                            size: 32,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: const [
-                              Text(
-                                'Video Pembelajaran Tersedia',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 15,
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: const [
+                                Text(
+                                  'Video Pembelajaran Tersedia',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
                                 ),
-                              ),
-                              SizedBox(height: 4),
-                              Text(
-                                'Ketuk untuk menonton di YouTube',
-                                style: TextStyle(
-                                  color: Color(0xFF94A3B8),
-                                  fontSize: 13,
+                                SizedBox(height: 4),
+                                Text(
+                                  'Ketuk untuk membuka video',
+                                  style: TextStyle(
+                                    color: Color(0xFF94A3B8),
+                                    fontSize: 13,
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
             const SizedBox(height: 20),
           ],
 
@@ -297,13 +345,11 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
   }
 
   Widget _buildStickyBottomActions() {
-    // [PERBAIKAN] Menggunakan key 'document_path' sesuai JSON
     final String? documentPath = _module!['document_path'];
 
     final hasPdf = documentPath != null && documentPath.toString().isNotEmpty;
     if (!hasPdf) return const SizedBox.shrink();
 
-    // Rangkai URL jika path tidak diawali dengan http
     String finalPdfUrl = documentPath.startsWith('http')
         ? documentPath
         : '$baseUrl/storage/$documentPath';
@@ -319,14 +365,28 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
           width: double.infinity,
           height: 52,
           child: ElevatedButton.icon(
-            onPressed: () => _launchURL(finalPdfUrl),
-            icon: const Icon(Icons.picture_as_pdf_rounded, size: 20),
+            // 🔥 UBAH BAGIAN ONPRESSED INI
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PdfViewerScreen(
+                    pdfUrl: finalPdfUrl,
+                    title: _module!['title'] ?? 'Materi PDF',
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(
+              Icons.menu_book_rounded,
+              size: 20,
+            ), // Ikon diganti jadi buku agar lebih cocok sebagai viewer
             label: const Text(
-              'Download PDF Materi',
+              'Baca PDF Materi',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
             ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF43F5E), // Rose 500
+              backgroundColor: const Color(0xFFF43F5E),
               foregroundColor: Colors.white,
               elevation: 0,
               shape: RoundedRectangleBorder(
@@ -349,13 +409,13 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: const BoxDecoration(
-              color: Color(0xFFFFF1F2), // Rose 50
+              color: Color(0xFFFFF1F2),
               shape: BoxShape.circle,
             ),
             child: const Icon(
               Icons.lock_rounded,
               size: 64,
-              color: Color(0xFFF43F5E), // Rose 500
+              color: Color(0xFFF43F5E),
             ),
           ),
           const SizedBox(height: 24),
@@ -386,7 +446,7 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
                 // Implementasi navigasi ke halaman langganan
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF4F46E5), // Indigo 600
+                backgroundColor: const Color(0xFF4F46E5),
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
