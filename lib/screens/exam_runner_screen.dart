@@ -192,7 +192,6 @@ class _ExamRunnerScreenState extends State<ExamRunnerScreen>
     if (!mounted) return;
 
     if (resultData != null && resultData.containsKey('score')) {
-      // 1. JIKA SERVER MENGEMBALIKAN NILAI: Munculkan Dialog Cantik
       showDialog(
         context: context,
         barrierDismissible: false, // Tidak bisa ditutup dengan tap di luar

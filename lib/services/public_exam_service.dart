@@ -1,6 +1,7 @@
 import 'dart:convert';
 import '../core/api_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../core/database_helper.dart';
 
 class PublicExamService {
   final ApiClient _apiClient = ApiClient();
@@ -21,12 +22,48 @@ class PublicExamService {
 
   Future<Map<String, dynamic>?> getPublicExamsPaginated({int page = 1}) async {
     try {
+      // 1. Ambil dari memori HP (Hanya untuk halaman 1 agar Home cepat)
+      if (page == 1) {
+        final localData = await DatabaseHelper.instance.getCache(
+          'exams_page_1',
+        );
+        if (localData != null) {
+          final data = jsonDecode(localData);
+
+          // Background Sync
+          _apiClient.get('/public/exams?page=1').then((res) {
+            if (res.statusCode == 200)
+              DatabaseHelper.instance.saveCache('exams_page_1', res.body);
+          });
+
+          return data['data']['exams'];
+        }
+      }
+
+      // 2. Ambil dari Server
       final response = await _apiClient.get('/public/exams?page=$page');
-      final data = jsonDecode(response.body);
-      if (response.statusCode == 200 && data['success'] == true)
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (page == 1) {
+          await DatabaseHelper.instance.saveCache(
+            'exams_page_1',
+            response.body,
+          );
+        }
         return data['data']['exams'];
+      }
       return null;
     } catch (e) {
+      // 3. JIKA OFFLINE, paksa gunakan memori HP
+      if (page == 1) {
+        final localData = await DatabaseHelper.instance.getCache(
+          'exams_page_1',
+        );
+        if (localData != null) {
+          final data = jsonDecode(localData);
+          return data['data']['exams'];
+        }
+      }
       return null;
     }
   }

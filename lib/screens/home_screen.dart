@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,6 +8,11 @@ import 'all_exams_screen.dart';
 import 'profile_screen.dart';
 import 'subscription_screen.dart';
 import 'all_modules_screen.dart';
+import 'dart:convert';
+import '../core/api_client.dart';
+import 'riwayat_nilai_screen.dart';
+import 'top_pelajar_screen.dart';
+import 'package:in_app_update/in_app_update.dart';
 
 // ============================================================
 // SUBTLE SHIMMER PAINTER (hanya untuk header premium)
@@ -70,6 +74,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
 
+    _checkForUpdate();
+
     _shimmerController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 4),
@@ -95,6 +101,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  Future<void> _checkForUpdate() async {
+    try {
+      AppUpdateInfo updateInfo = await InAppUpdate.checkForUpdate();
+
+      if (updateInfo.updateAvailability == UpdateAvailability.updateAvailable) {
+        await InAppUpdate.performImmediateUpdate();
+      }
+    } catch (e) {
+      debugPrint("Gagal mengecek update Play Store: $e");
+    }
+  }
+
   Future<void> _loadUserData() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -103,6 +121,43 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _isUserPremium = prefs.getBool('is_premium') ?? false;
     });
 
+    // 🔥 SINKRONISASI STATUS PREMIUM & POIN DARI SERVER (Latar Belakang)
+    try {
+      final response = await ApiClient().get('/subscription/status');
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        bool isPremiumValid = data['is_premium'] ?? false;
+        int poinTerbaru = data['total_poin'] ?? _totalPoin;
+
+        // Cek secara ketat apakah tanggal expired sudah terlewati
+        String? premiumUntil = data['premium_until'];
+        if (isPremiumValid && premiumUntil != null) {
+          DateTime expiredDate = DateTime.parse(premiumUntil).toLocal();
+          if (DateTime.now().isAfter(expiredDate)) {
+            // Jika waktu saat ini sudah MELEWATI waktu premium_until
+            isPremiumValid = false;
+          }
+        }
+
+        // 1. SIMPAN SELALU DATA TERBARU KE MEMORI HP (Dikeluarkan dari IF)
+        await prefs.setBool('is_premium', isPremiumValid);
+        await prefs.setInt('total_poin', poinTerbaru);
+
+        // 2. PERBARUI TAMPILAN (UI) BERANDA SECARA LANGSUNG
+        if (mounted) {
+          setState(() {
+            _isUserPremium = isPremiumValid;
+            _totalPoin =
+                poinTerbaru; // 🔥 INI KUNCI AGAR ANGKA DI LAYAR BERUBAH
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Gagal sinkronisasi data: $e");
+    }
+
+    // Tampilkan Iklan Promo jika user TIDAK PREMIUM
     if (!_isUserPremium) {
       final String? lastPromoString = prefs.getString('last_promo_time');
       DateTime? lastPromoTime;
@@ -636,6 +691,72 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   fontWeight: FontWeight.w400,
                 ),
               ),
+              const SizedBox(height: 24),
+              // ==========================================
+              // 🔥 TAMBAHAN: KOTAK POIN UNTUK USER BIASA
+              // ==========================================
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 10,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEEF2FF), // Biru pudar
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.stars_rounded,
+                        color: Color(0xFF4F46E5), // Biru aksen
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Text(
+                      'Poin Belajar',
+                      style: TextStyle(
+                        color: Color(0xFF64748B),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '$_totalPoin',
+                      style: const TextStyle(
+                        color: Color(0xFF4F46E5), // Biru aksen
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: -0.5,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Text(
+                      'pts',
+                      style: TextStyle(
+                        color: Color(0xFF818CF8), // Biru muda
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // ==========================================
             ],
           ),
         ],
@@ -654,6 +775,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         children: [
           _buildSectionLabel('Menu Belajar'),
           const SizedBox(height: 16),
+          // Kita tambah menu, grid tetap 3 kolom ke samping
           GridView.count(
             crossAxisCount: 3,
             shrinkWrap: true,
@@ -662,6 +784,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             crossAxisSpacing: 12,
             childAspectRatio: 0.82,
             children: [
+              // 1. MATERI MTK
               _MenuCard(
                 icon: Icons.calculate_rounded,
                 color: const Color(0xFF3B82F6),
@@ -671,16 +794,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      // Parameter diisi sesuai nama mapel & kelas di database Laravel Anda
                       builder: (_) => const AllModulesScreen(
                         subjectFilter: 'Matematika',
-                        levelFilter:
-                            'Kelas 6', // Anda bisa menghapus baris levelFilter jika ingin melihat MTK semua kelas
+                        levelFilter: 'Kelas 6',
                       ),
                     ),
                   );
                 },
               ),
+              // 2. MATERI B. INDO
               _MenuCard(
                 icon: Icons.menu_book_rounded,
                 color: const Color(0xFF10B981),
@@ -698,6 +820,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   );
                 },
               ),
+              // 3. LATIHAN MTK
               _MenuCard(
                 icon: Icons.quiz_rounded,
                 color: const Color(0xFF8B5CF6),
@@ -713,6 +836,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   );
                 },
               ),
+              // 4. LATIHAN B. INDO
               _MenuCard(
                 icon: Icons.assignment_rounded,
                 color: const Color(0xFFF59E0B),
@@ -730,10 +854,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 },
               ),
 
+              // ==========================================
+              // 5. RANKING UJIAN (Berdasarkan Nilai Ujian)
+              // ==========================================
               _MenuCard(
                 icon: Icons.emoji_events_rounded,
-                color: const Color(0xFFF43F5E),
-                title: 'Ranking\nNasional',
+                color: const Color(0xFFF43F5E), // Merah Muda
+                title: 'Ranking\nUjian',
                 isPremium: _isUserPremium,
                 onTap: () {
                   Navigator.push(
@@ -744,6 +871,42 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   );
                 },
               ),
+
+              // ==========================================
+              // 6. RANKING POIN (Top Global User)
+              // ==========================================
+              _MenuCard(
+                icon: Icons.military_tech_rounded,
+                color: const Color(0xFFD97706),
+                title: 'Top\nPelajar',
+                isPremium: _isUserPremium,
+                onTap: () {
+                  // 🔥 MENGARAHKAN KE LAYAR BARU
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const TopPelajarScreen()),
+                  );
+                },
+              ),
+
+              // 7. RIWAYAT NILAI (Menu Tambahan agar rapi)
+              _MenuCard(
+                icon: Icons.history_rounded,
+                color: const Color(0xFF14B8A6),
+                title: 'Riwayat\nNilai',
+                isPremium: _isUserPremium,
+                onTap: () {
+                  // 🔥 MENGARAHKAN KE HALAMAN RIWAYAT NILAI
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const RiwayatNilaiScreen(),
+                    ),
+                  );
+                },
+              ),
+
+              // 8. PROFIL SAYA
               _MenuCard(
                 icon: Icons.person_rounded,
                 color: const Color(0xFF0EA5E9),
@@ -973,7 +1136,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () {
+              // 1. Tutup pop-up dialog terlebih dahulu
+              Navigator.pop(context);
+
+              // 2. Arahkan ke halaman SubscriptionScreen
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const SubscriptionScreen(),
+                ),
+              );
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFF59E0B),
               foregroundColor: Colors.white,
@@ -989,20 +1163,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  void _showDummyMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          message,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: const Color(0xFF1E293B),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }

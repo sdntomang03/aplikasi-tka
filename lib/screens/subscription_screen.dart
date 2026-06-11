@@ -1,5 +1,13 @@
 import 'dart:ui';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../core/api_client.dart';
+import 'package:app_links/app_links.dart';
+import 'dart:async';
+import '../services/auth_service.dart'; // Dibutuhkan untuk fungsi Logout
+import 'login_screen.dart'; // Pastikan path ini sesuai dengan file login Anda
+import 'package:shared_preferences/shared_preferences.dart';
 
 class SubscriptionScreen extends StatefulWidget {
   const SubscriptionScreen({super.key});
@@ -9,8 +17,15 @@ class SubscriptionScreen extends StatefulWidget {
 }
 
 class _SubscriptionScreenState extends State<SubscriptionScreen> {
-  // Secara default, pilih paket tengah (yang paling menguntungkan)
   int _selectedPlanIndex = 1;
+  late AppLinks _appLinks;
+  StreamSubscription<Uri>? _linkSubscription;
+
+  // State untuk mengontrol tampilan layar
+  bool _isLoadingStatus = true;
+  bool _isPremium = false;
+  String? _premiumUntil;
+  List<Map<String, dynamic>> _pendingTransactions = [];
 
   final List<Map<String, dynamic>> _plans = [
     {
@@ -27,7 +42,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
       "original_price": "Rp 150.000",
       "save_text": "Hemat 20%",
       "duration": "/ 6 bln",
-      "is_popular": true, // Ini yang akan kita tonjolkan
+      "is_popular": true,
     },
     {
       "title": "Seumur Hidup",
@@ -40,14 +55,409 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _initDeepLinkListener();
+    _fetchSubscriptionStatus(); // Cek status saat halaman dibuka
+  }
+
+  @override
+  void dispose() {
+    _linkSubscription?.cancel();
+    super.dispose();
+  }
+
+  // ==========================================
+  // 1. FUNGSI CEK STATUS (API)
+  // ==========================================
+  Future<void> _fetchSubscriptionStatus() async {
+    setState(() => _isLoadingStatus = true);
+    try {
+      final response = await ApiClient().get('/subscription/status');
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        // 🔥 TAMBAHAN: Simpan status terbaru ke memori HP
+        bool isPremiumFromServer = data['is_premium'] ?? false;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('is_premium', isPremiumFromServer);
+
+        setState(() {
+          _isPremium = isPremiumFromServer;
+          _premiumUntil = data['premium_until'];
+          _pendingTransactions = List<Map<String, dynamic>>.from(
+            data['pending_transactions'] ?? [],
+          );
+        });
+      }
+    } catch (e) {
+      debugPrint("Gagal memuat status langganan: $e");
+    } finally {
+      if (mounted) setState(() => _isLoadingStatus = false);
+    }
+  }
+
+  // ==========================================
+  // 2. FUNGSI BATALKAN TAGIHAN (API)
+  // ==========================================
+  Future<void> _cancelTransaction(String orderId) async {
+    // Tampilkan loading kecil
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final response = await ApiClient().post(
+        '/subscription/cancel/$orderId',
+        {},
+      );
+      if (mounted) Navigator.pop(context); // Tutup loading
+
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Tagihan berhasil dihapus/dibatalkan.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        _fetchSubscriptionStatus(); // Refresh ulang tampilan
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Gagal membatalkan tagihan.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error jaringan saat membatalkan.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  // ==========================================
+  // PENGINTAI DEEP LINK
+  // ==========================================
+  void _initDeepLinkListener() {
+    _appLinks = AppLinks();
+    _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
+      if (uri.scheme == 'sahabatkreasianak') {
+        if (uri.toString().contains('success') ||
+            uri.toString().contains('settlement')) {
+          if (Navigator.canPop(context)) Navigator.pop(context);
+          String orderId = uri.queryParameters['order_id'] ?? '-';
+          _showSuccessDialog(orderId);
+        } else if (uri.toString().contains('unfinish') ||
+            uri.toString().contains('error')) {
+          if (Navigator.canPop(context)) Navigator.pop(context);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Pembayaran belum diselesaikan atau telah dibatalkan.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          _fetchSubscriptionStatus(); // Refresh jika dibatalkan dari midtrans
+        }
+      }
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_isLoadingStatus) {
+      return const Scaffold(
+        backgroundColor: Color(0xFFF8FAFC),
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFFD4AF37)),
+        ),
+      );
+    }
+
+    // CABANG 1: JIKA SUDAH PREMIUM
+    if (_isPremium) {
+      return _buildPremiumActiveView();
+    }
+
+    // CABANG 2: JIKA ADA TAGIHAN MENGGANTUNG
+    if (_pendingTransactions.isNotEmpty) {
+      return _buildPendingTransactionsView();
+    }
+
+    // CABANG 3: JIKA NORMAL (BELUM PREMIUM & TIDAK ADA TAGIHAN)
+    return _buildSubscriptionPlansView();
+  }
+
+  // ==========================================
+  // TAMPILAN 1: SUDAH PREMIUM (AKTIF)
+  // ==========================================
+  Widget _buildPremiumActiveView() {
+    // Format tanggal sederhana
+    String untilText = "Seumur Hidup";
+    if (_premiumUntil != null) {
+      DateTime dt = DateTime.parse(_premiumUntil!).toLocal();
+      untilText = "${dt.day}-${dt.month}-${dt.year}";
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: Colors.black,
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: const BoxDecoration(
+                  color: Colors.green,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.verified_rounded,
+                  size: 64,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                "Status PRO Aktif!",
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                "Akun Anda sudah memiliki akses premium.\nBerlaku sampai: $untilText",
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 15,
+                  color: Colors.black54,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 40),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.amber),
+                ),
+                child: const Text(
+                  "Selamat! Akun Anda kini memiliki Akses PRO. Silakan kembali ke Beranda untuk mulai belajar.", // <-- Pesan diubah
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.orange,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 32),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () async {
+                    Navigator.pushNamedAndRemoveUntil(
+                      context,
+                      '/home',
+                      (route) => false,
+                    );
+                  },
+                  icon: const Icon(Icons.logout_rounded),
+                  label: const Text("Logout Sekarang"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.indigo,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ==========================================
+  // TAMPILAN 2: ADA TAGIHAN MENGGANTUNG
+  // ==========================================
+  Widget _buildPendingTransactionsView() {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      appBar: AppBar(
+        title: const Text(
+          "Tagihan Belum Dibayar",
+          style: TextStyle(
+            color: Colors.black,
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        backgroundColor: Colors.white,
+        elevation: 1,
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: Colors.black,
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(24),
+        itemCount: _pendingTransactions.length,
+        itemBuilder: (context, index) {
+          final trx = _pendingTransactions[index];
+          return Card(
+            elevation: 2,
+            margin: const EdgeInsets.only(bottom: 20),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          "Menunggu Pembayaran",
+                          style: TextStyle(
+                            color: Colors.orange,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        trx['order_id'] ?? '-',
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    "Paket ${trx['plan_name']}",
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "Total: Rp ${trx['amount']}",
+                    style: const TextStyle(
+                      fontSize: 16,
+                      color: Colors.indigo,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      // Tombol Batalkan / Hapus
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => _cancelTransaction(trx['order_id']),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red,
+                            side: const BorderSide(color: Colors.red),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text("Hapus Tagihan"),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      // Tombol Lanjut Bayar
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: () async {
+                            if (trx['snap_token'] != null) {
+                              // Pakai URL Snap langsung (karena kita simpan tokennya)
+                              final snapUrl =
+                                  "https://app.sandbox.midtrans.com/snap/v3/redirection/${trx['snap_token']}";
+                              if (await canLaunchUrl(Uri.parse(snapUrl))) {
+                                await launchUrl(
+                                  Uri.parse(snapUrl),
+                                  mode: LaunchMode.externalApplication,
+                                );
+                                if (mounted) _buildPaymentInstruction(context);
+                              }
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'URL Pembayaran tidak ditemukan.',
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.indigo,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text("Bayar Sekarang"),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ==========================================
+  // TAMPILAN 3: LAYAR PEMILIHAN PAKET (NORMAL)
+  // ==========================================
+  Widget _buildSubscriptionPlansView() {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: Stack(
         children: [
-          // ==========================================
-          // 1. BACKGROUND DEKORATIF (EFEK GLOWING)
-          // ==========================================
+          // Background Glow Dekoratif
           Positioned(
             top: -100,
             right: -50,
@@ -83,9 +493,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
             ),
           ),
 
-          // ==========================================
-          // 2. KONTEN UTAMA SCROLLABLE
-          // ==========================================
+          // Area Konten Utama
           SafeArea(
             bottom: false,
             child: CustomScrollView(
@@ -100,7 +508,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Tombol Kembali
                         GestureDetector(
                           onTap: () => Navigator.pop(context),
                           child: Container(
@@ -121,8 +528,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                           ),
                         ),
                         const SizedBox(height: 32),
-
-                        // Header Icon & Title
                         Center(
                           child: Column(
                             children: [
@@ -179,8 +584,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                           ),
                         ),
                         const SizedBox(height: 40),
-
-                        // List Keunggulan
                         const Text(
                           "Keunggulan Member PRO:",
                           style: TextStyle(
@@ -203,10 +606,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                         _buildFeatureItem(
                           "Prioritas di Papan Peringkat Nasional",
                         ),
-
                         const SizedBox(height: 40),
-
-                        // Pilihan Paket
                         const Text(
                           "Pilih Paket Belajarmu:",
                           style: TextStyle(
@@ -216,15 +616,10 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                           ),
                         ),
                         const SizedBox(height: 16),
-
-                        // Render daftar paket secara dinamis
                         ...List.generate(_plans.length, (index) {
                           return _buildPlanCard(index, _plans[index]);
                         }),
-
-                        const SizedBox(
-                          height: 120,
-                        ), // Spasi ekstra untuk tombol bottom
+                        const SizedBox(height: 120),
                       ],
                     ),
                   ),
@@ -233,9 +628,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
             ),
           ),
 
-          // ==========================================
-          // 3. BOTTOM STICKY BUTTON (CALL TO ACTION)
-          // ==========================================
+          // Tombol Sticky Bottom (Call To Action)
           Positioned(
             bottom: 0,
             left: 0,
@@ -255,17 +648,12 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                   ),
                   child: ElevatedButton(
                     onPressed: () {
-                      // TODO: Arahkan ke Payment Gateway (Midtrans/Xendit)
                       final selectedPlan = _plans[_selectedPlanIndex];
                       _showProcessingPayment(context, selectedPlan);
                     },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(
-                        0xFF1E1E24,
-                      ), // Warna Premium Dark
-                      foregroundColor: const Color(
-                        0xFFFFDF00,
-                      ), // Warna Teks Emas
+                      backgroundColor: const Color(0xFF1E1E24),
+                      foregroundColor: const Color(0xFFFFDF00),
                       padding: const EdgeInsets.symmetric(vertical: 20),
                       elevation: 10,
                       shadowColor: const Color(0xFF1E1E24).withOpacity(0.3),
@@ -298,7 +686,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     );
   }
 
-  // Widget untuk List Keunggulan
   Widget _buildFeatureItem(String text) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -332,7 +719,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     );
   }
 
-  // Widget untuk Kartu Paket (Animasi transisi saat diklik)
   Widget _buildPlanCard(int index, Map<String, dynamic> plan) {
     bool isSelected = _selectedPlanIndex == index;
     bool isPopular = plan['is_popular'];
@@ -371,7 +757,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
           children: [
             Row(
               children: [
-                // Radio Button Custom
                 Container(
                   width: 24,
                   height: 24,
@@ -386,8 +771,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                   ),
                 ),
                 const SizedBox(width: 16),
-
-                // Detail Paket
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -429,7 +812,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                           ),
                         ],
                       ),
-                      // Tampilkan harga coret jika ada diskon
                       if (plan['original_price'] != "") ...[
                         const SizedBox(height: 4),
                         Text(
@@ -447,8 +829,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                 ),
               ],
             ),
-
-            // Badge "PALING LARIS" (Pita di pojok kanan atas)
             if (isPopular)
               Positioned(
                 top: -32,
@@ -482,8 +862,6 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                   ),
                 ),
               ),
-
-            // Badge "Hemat" di dalam card
             if (plan['save_text'] != "")
               Positioned(
                 bottom: 0,
@@ -513,42 +891,136 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     );
   }
 
-  // Efek Loading Pembayaran (Mockup)
-  // Efek Loading Pembayaran (Mockup)
-  void _showProcessingPayment(
+  // ==========================================
+  // LOGIKA HIT API & PROSES PEMBAYARAN BARU
+  // ==========================================
+  Future<void> _showProcessingPayment(
     BuildContext context,
     Map<String, dynamic> selectedPlan,
-  ) {
+  ) async {
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => Center(
-        // <-- Hapus const di sini
         child: Container(
-          padding: const EdgeInsets.all(32), // <-- Pindahkan const ke sini
+          padding: const EdgeInsets.all(32),
           decoration: const BoxDecoration(
-            // <-- Pindahkan const ke sini
             color: Colors.white,
             shape: BoxShape.circle,
           ),
-          child: const CircularProgressIndicator(
-            color: Color(0xFFD4AF37),
-          ), // <-- Pindahkan const ke sini
+          child: const CircularProgressIndicator(color: Color(0xFFD4AF37)),
         ),
       ),
     );
 
-    // Simulasi loading 2 detik lalu tutup
-    Future.delayed(const Duration(seconds: 2), () {
-      Navigator.pop(context); // Tutup loading
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            "Mengarahkan ke pembayaran paket ${selectedPlan['title']}...",
-          ),
-          backgroundColor: const Color(0xFF10B981),
-        ),
+    try {
+      String cleanPrice = selectedPlan['price'].replaceAll(
+        RegExp(r'[^0-9]'),
+        '',
       );
-    });
+      final response = await ApiClient().post('/subscription/checkout', {
+        'plan_name': selectedPlan['title'],
+        'amount': int.parse(cleanPrice),
+      });
+
+      if (context.mounted) Navigator.pop(context); // Tutup Loading Ring
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['status'] == 'success' && data['redirect_url'] != null) {
+          final Uri url = Uri.parse(data['redirect_url']);
+          if (await canLaunchUrl(url)) {
+            await launchUrl(url, mode: LaunchMode.externalApplication);
+            if (context.mounted) _buildPaymentInstruction(context);
+          }
+        }
+      } else {
+        if (context.mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Gagal memproses. Coba lagi."),
+              backgroundColor: Colors.red,
+            ),
+          );
+      }
+    } catch (e) {
+      if (context.mounted) Navigator.pop(context);
+    }
+  }
+
+  void _buildPaymentInstruction(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Menunggu Pembayaran ⏳'),
+        content: const Text(
+          'Silakan tuntaskan proses transaksi pada jendela browser yang baru saja muncul di HP Anda.',
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _fetchSubscriptionStatus(); // Refresh layar setelah modal ditutup
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFD4AF37),
+            ),
+            child: const Text('Tutup', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSuccessDialog(String orderId) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          'Pembayaran Berhasil! 🎉',
+          style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Terima kasih. Berkas transaksi Anda sudah sukses diverifikasi oleh sistem.',
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'ID Transaksi: $orderId',
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.grey,
+                fontFamily: 'monospace',
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Silakan muat ulang (Restart) aplikasi Anda untuk memperbarui hak akses premium.',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pushNamedAndRemoveUntil(
+                context,
+                '/home',
+                (route) => false,
+              );
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            child: const Text(
+              'Kembali ke Beranda',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

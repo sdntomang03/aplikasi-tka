@@ -18,6 +18,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _userSchool = "Umum";
   String _userEmail = "-";
   String _userUsername = "-";
+  int _totalPoin = 0;
 
   @override
   void initState() {
@@ -34,6 +35,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _userEmail = prefs.getString('email') ?? "email@siswa.com";
       _userUsername = prefs.getString('username') ?? "siswa123";
       _isLoading = false;
+      _totalPoin = prefs.getInt('total_poin') ?? 0;
     });
   }
 
@@ -195,7 +197,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Expanded(
             child: _buildStatCard(
               "Total Poin",
-              "0", // TODO: Dinamis dari API nanti
+              _totalPoin.toString(),
               Icons.stars_rounded,
               Colors.orange,
             ),
@@ -736,7 +738,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             const SizedBox(height: 4),
             const Text(
-              "Pengembang Aplikasi CBT SD",
+              "Sahabat Kreasi Anak",
               style: TextStyle(
                 color: Color(0xFF4338CA),
                 fontWeight: FontWeight.bold,

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../core/api_client.dart';
+import '../core/database_helper.dart';
 
 class ModuleService {
   final ApiClient _apiClient = ApiClient();
@@ -11,32 +12,45 @@ class ModuleService {
   Future<List<dynamic>> getModules({String? search}) async {
     try {
       final String query = search != null ? '?search=$search' : '';
-      final response = await _apiClient.get('/modules$query');
 
-      print("\n=== 🔍 DEBUG API MODULES ===");
-      print("Status Code : ${response.statusCode}");
-      print("Body        : ${response.body}");
-      print("============================\n");
+      // 1. Jika TIDAK sedang mencari, baca memori HP dulu agar INSTAN
+      if (search == null || search.isEmpty) {
+        final localData = await DatabaseHelper.instance.getCache(
+          'modules_list',
+        );
+        if (localData != null) {
+          final data = jsonDecode(localData);
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+          // Mengecek server secara background. Jika ada materi baru, diam-diam simpan ke HP
+          _apiClient.get('/modules').then((res) {
+            if (res.statusCode == 200)
+              DatabaseHelper.instance.saveCache('modules_list', res.body);
+          });
 
-        if (data['data'] != null && data['data']['data'] != null) {
-          return data['data']['data'];
-        } else if (data['data'] != null && data['data'] is List) {
-          return data['data'];
+          return data['data']['data'] ?? data['data'] ?? [];
         }
+      }
 
-        print("⚠️ Struktur data tidak dikenali: ${data.keys}");
-        return [];
-      } else if (response.statusCode == 401) {
-        print("❌ TOKEN EXPIRED! Silakan Logout dan Login kembali.");
-      } else {
-        print("❌ Status tidak ditangani: ${response.statusCode}");
+      // 2. Jika memori HP kosong, tembak API langsung
+      final response = await _apiClient.get('/modules$query');
+      if (response.statusCode == 200) {
+        if (search == null || search.isEmpty) {
+          await DatabaseHelper.instance.saveCache(
+            'modules_list',
+            response.body,
+          );
+        }
+        final data = jsonDecode(response.body);
+        return data['data']['data'] ?? data['data'] ?? [];
       }
       return [];
     } catch (e) {
-      print("❌ Error fetching modules: $e");
+      // 3. JIKA OFFLINE (Gagal hit API), paksa gunakan memori HP
+      final localData = await DatabaseHelper.instance.getCache('modules_list');
+      if (localData != null) {
+        final data = jsonDecode(localData);
+        return data['data']['data'] ?? data['data'] ?? [];
+      }
       return [];
     }
   }
