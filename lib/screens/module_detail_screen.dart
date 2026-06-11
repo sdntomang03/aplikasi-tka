@@ -350,9 +350,22 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
     final hasPdf = documentPath != null && documentPath.toString().isNotEmpty;
     if (!hasPdf) return const SizedBox.shrink();
 
-    String finalPdfUrl = documentPath.startsWith('http')
-        ? documentPath
-        : '$baseUrl/storage/$documentPath';
+    // ==========================================
+    // [PERBAIKAN] LOGIKA URL PDF OFFLINE & ONLINE
+    // ==========================================
+    String finalPdfUrl = '';
+
+    if (documentPath!.contains('asset:')) {
+      // Jika dari database offline (maka potong murni string asset-nya)
+      finalPdfUrl = documentPath.substring(documentPath.indexOf('asset:'));
+    } else if (documentPath.startsWith('http')) {
+      // Jika sudah berupa link full internet
+      finalPdfUrl = documentPath;
+    } else {
+      // Jika dari API internet tapi hanya path belakangnya saja
+      finalPdfUrl = '$baseUrl/storage/$documentPath';
+    }
+    // ==========================================
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -365,22 +378,19 @@ class _ModuleDetailScreenState extends State<ModuleDetailScreen> {
           width: double.infinity,
           height: 52,
           child: ElevatedButton.icon(
-            // 🔥 UBAH BAGIAN ONPRESSED INI
             onPressed: () {
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (context) => PdfViewerScreen(
-                    pdfUrl: finalPdfUrl,
+                    pdfUrl:
+                        finalPdfUrl, // Sekarang isinya dijamin murni "asset:assets/..."
                     title: _module!['title'] ?? 'Materi PDF',
                   ),
                 ),
               );
             },
-            icon: const Icon(
-              Icons.menu_book_rounded,
-              size: 20,
-            ), // Ikon diganti jadi buku agar lebih cocok sebagai viewer
+            icon: const Icon(Icons.menu_book_rounded, size: 20),
             label: const Text(
               'Baca PDF Materi',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),

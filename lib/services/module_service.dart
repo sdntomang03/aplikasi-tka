@@ -59,22 +59,34 @@ class ModuleService {
   // AMBIL DETAIL MODUL BACA
   // ==========================================
   Future<Map<String, dynamic>?> getModuleDetail(String slug) async {
+    final cacheKey = 'module_detail_$slug';
+
     try {
+      // 1. Coba baca dari memori HP (SQLite) terlebih dahulu agar instan
+      final localData = await DatabaseHelper.instance.getCache(cacheKey);
+      if (localData != null) {
+        final data = jsonDecode(localData);
+
+        // Background sync: diam-diam update data di HP jika ada internet
+        _apiClient
+            .get('/modules/$slug')
+            .then((res) {
+              if (res.statusCode == 200) {
+                DatabaseHelper.instance.saveCache(cacheKey, res.body);
+              }
+            })
+            .catchError((_) {}); // Abaikan error jika offline
+
+        return data['data'] as Map<String, dynamic>;
+      }
+
+      // 2. Jika tidak ada di HP, ambil dari server
       final response = await _apiClient.get('/modules/$slug');
 
-      print("\n=== 🔍 DEBUG API MODULE DETAIL ===");
-      print("Slug        : $slug");
-      print("Status Code : ${response.statusCode}");
-      print("Body        : ${response.body}");
-      print("==================================\n");
-
       if (response.statusCode == 200) {
+        // Simpan ke HP untuk dibuka offline besok
+        await DatabaseHelper.instance.saveCache(cacheKey, response.body);
         final data = jsonDecode(response.body);
-
-        if (data['data'] == null) {
-          print("❌ Key 'data' tidak ditemukan dalam response!");
-          return null;
-        }
         return data['data'] as Map<String, dynamic>;
       } else if (response.statusCode == 403) {
         final data = jsonDecode(response.body);
@@ -83,18 +95,16 @@ class ModuleService {
           'message': data['message'] ?? 'Akses ditolak.',
           'module': data['data'],
         };
-      } else if (response.statusCode == 401) {
-        print("❌ TOKEN EXPIRED! Silakan Logout dan Login kembali.");
-        return null;
-      } else if (response.statusCode == 404) {
-        print("❌ Modul dengan slug '$slug' tidak ditemukan.");
-        return null;
       }
-
-      print("❌ Status tidak ditangani: ${response.statusCode}");
       return null;
     } catch (e) {
-      print("❌ Error fetching module detail: $e");
+      // 3. JIKA INTERNET MATI / API ERROR, paksa buka dari HP
+      final localData = await DatabaseHelper.instance.getCache(cacheKey);
+      if (localData != null) {
+        final data = jsonDecode(localData);
+        return data['data'] as Map<String, dynamic>;
+      }
+      print("❌ Error fetching module detail & no cache: $e");
       return null;
     }
   }

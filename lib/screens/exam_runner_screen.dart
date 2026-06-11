@@ -851,7 +851,21 @@ class _ExamRunnerScreenState extends State<ExamRunnerScreen>
       Map<String, dynamic> matchAnswers = _answers[qId] != null
           ? Map<String, dynamic>.from(_answers[qId])
           : {};
-      final List<dynamic> matches = question['matches'] ?? [];
+
+      final List<dynamic> rawMatches = question['matches'] ?? [];
+
+      // [BARU] Lakukan pengacakan (shuffle) hanya SEKALI.
+      // Simpan di dalam state `question` agar susunannya tidak berubah-ubah
+      // setiap kali layar di-render ulang akibat setState (saat user tap kotak).
+      if (question['left_matches'] == null ||
+          question['right_matches'] == null) {
+        question['left_matches'] = List.from(rawMatches)..shuffle();
+        question['right_matches'] = List.from(rawMatches)..shuffle();
+      }
+
+      final List<dynamic> leftMatches = question['left_matches'];
+      final List<dynamic> rightMatches = question['right_matches'];
+
       final List<Color> pairColors = [
         Colors.blue,
         Colors.pink,
@@ -889,10 +903,13 @@ class _ExamRunnerScreenState extends State<ExamRunnerScreen>
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Kolom kiri: premise
+              // =====================================
+              // KOLOM KIRI: PREMISE (Telah Diacak)
+              // =====================================
               Expanded(
                 child: Column(
-                  children: matches.asMap().entries.map((entry) {
+                  // Gunakan leftMatches
+                  children: leftMatches.asMap().entries.map((entry) {
                     final int index = entry.key;
                     final m = entry.value;
                     final String pId = m['id'].toString();
@@ -953,10 +970,14 @@ class _ExamRunnerScreenState extends State<ExamRunnerScreen>
                 ),
               ),
               const SizedBox(width: 12),
-              // Kolom kanan: target
+
+              // =====================================
+              // KOLOM KANAN: TARGET (Telah Diacak)
+              // =====================================
               Expanded(
                 child: Column(
-                  children: matches.map((m) {
+                  // Gunakan rightMatches
+                  children: rightMatches.map((m) {
                     final int tId = m['id'];
                     final String? matchedPremiseId = matchAnswers.entries
                         .where((e) => e.value == tId)
@@ -968,7 +989,9 @@ class _ExamRunnerScreenState extends State<ExamRunnerScreen>
                     Color targetBgColor = Colors.white;
 
                     if (isMatched) {
-                      final int premiseIndex = matches.indexWhere(
+                      // [BARU] Cari index warna berdasarkan posisi di leftMatches,
+                      // agar warnanya cocok (sinkron) dengan pasangannya di kiri.
+                      final int premiseIndex = leftMatches.indexWhere(
                         (p) => p['id'].toString() == matchedPremiseId,
                       );
                       if (premiseIndex != -1) {

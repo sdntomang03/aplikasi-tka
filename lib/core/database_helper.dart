@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'package:flutter/services.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -16,18 +18,26 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    // Buat tabel sederhana untuk menyimpan JSON
-    return await openDatabase(path, version: 1, onCreate: _createDB);
-  }
 
-  Future _createDB(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE offline_cache (
-        id TEXT PRIMARY KEY,
-        json_data TEXT,
-        updated_at TEXT
-      )
-    ''');
+    // BARIS INI ADALAH KUNCINYA:
+    // Hapus database lama secara paksa setiap kali aplikasi dibuka
+    await deleteDatabase(path);
+
+    print("ℹ️ Menyalin database baru dari assets...");
+    try {
+      await Directory(dirname(path)).create(recursive: true);
+      ByteData data = await rootBundle.load(join('assets', filePath));
+      List<int> bytes = data.buffer.asUint8List(
+        data.offsetInBytes,
+        data.lengthInBytes,
+      );
+      await File(path).writeAsBytes(bytes, flush: true);
+      print("✅ DATABASE BARU DARI ASSETS BERHASIL DITIMPA!");
+    } catch (e) {
+      print("❌ Error menyalin database: $e");
+    }
+
+    return await openDatabase(path, version: 1);
   }
 
   // Menyimpan data dari server ke HP (Otomatis menimpa yang lama)

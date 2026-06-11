@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:http/io_client.dart';
-import 'package:url_launcher/url_launcher.dart'; // Wajib untuk tombol buka di luar
+import 'package:url_launcher/url_launcher.dart';
 
 class PdfViewerScreen extends StatefulWidget {
   final String pdfUrl;
@@ -20,10 +20,33 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
   bool _isLoading = true;
   String _errorMessage = '';
 
+  // Variabel untuk melacak status offline
+  bool _isOfflineAsset = false;
+  String _assetPath = '';
+
   @override
   void initState() {
     super.initState();
-    _fetchPdfBulletproof();
+    _checkPdfSource();
+  }
+
+  // Cek apakah ini file offline atau online
+  void _checkPdfSource() {
+    if (widget.pdfUrl.contains('asset:')) {
+      // MODE OFFLINE
+      setState(() {
+        _isOfflineAsset = true;
+        // Potong teks untuk mendapatkan path murni: assets/images/offline/namafile.pdf
+        _assetPath = widget.pdfUrl.substring(
+          widget.pdfUrl.indexOf('asset:') + 6,
+        );
+        _isLoading = false;
+      });
+    } else {
+      // MODE ONLINE
+      _isOfflineAsset = false;
+      _fetchPdfBulletproof();
+    }
   }
 
   Future<void> _fetchPdfBulletproof() async {
@@ -82,6 +105,15 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
 
   // Fungsi untuk membuka PDF di browser luar / Google Drive HP
   Future<void> _openInExternalBrowser() async {
+    if (_isOfflineAsset) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('File offline tidak bisa dibuka di browser eksternal.'),
+        ),
+      );
+      return;
+    }
+
     final Uri url = Uri.parse(widget.pdfUrl);
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
       if (mounted) {
@@ -118,6 +150,14 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                 ],
               ),
             )
+          // JIKA OFFLINE, langsung render dari asset
+          : _isOfflineAsset
+          ? SfPdfViewer.asset(
+              _assetPath,
+              canShowScrollHead: true,
+              canShowScrollStatus: true,
+            )
+          // JIKA ONLINE DAN ERROR
           : _errorMessage.isNotEmpty
           ? Center(
               child: Padding(
@@ -161,6 +201,7 @@ class _PdfViewerScreenState extends State<PdfViewerScreen> {
                 ),
               ),
             )
+          // JIKA ONLINE DAN SUKSES
           : SfPdfViewer.memory(
               _pdfBytes!,
               canShowScrollHead: true,

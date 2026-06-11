@@ -32,6 +32,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/cbt_cache.db
+    - assets/images/offline/
 
 flutter_launcher_icons:
   android: "launcher_icon"
